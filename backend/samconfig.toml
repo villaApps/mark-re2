@@ -1,0 +1,64 @@
+version = 0.1
+
+[default]
+[default.global]
+[default.global.parameters]
+stack_name = "malta-property-analyzer"
+
+[default.build]
+[default.build.parameters]
+use_container = true
+parallel = true
+
+[default.sync]
+[default.sync.parameters]
+watch = true
+
+[default.local_invoke]
+[default.local_invoke.parameters]
+warm_containers = "EAGER"
+
+[default.deploy]
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+resolve_s3 = true
+s3_prefix = "malta-property-analyzer"
+region = "eu-west-1"
+parameter_overrides = "Environment=dev"
+image_repositories = []
+
+[default.deploy.parameters.tags]
+Project = "malta-property-analyzer"
+Environment = "dev"
+ManagedBy = "SAM"
+
+# Development environment
+[dev]
+[dev.deploy]
+[dev.deploy.parameters]
+stack_name = "malta-property-analyzer-dev"
+parameter_overrides = "Environment=dev ScraperSchedule='cron(0 2 * * ? *)'"
+region = "eu-west-1"
+
+# Staging environment
+[staging]
+[staging.deploy]
+[staging.deploy.parameters]
+stack_name = "malta-property-analyzer-staging"
+parameter_overrides = "Environment=staging ScraperSchedule='cron(0 2 * * ? *)'"
+region = "eu-west-1"
+
+# Production environment
+[prod]
+[prod.deploy]
+[prod.deploy.parameters]
+stack_name = "malta-property-analyzer-prod"
+parameter_overrides = "Environment=prod ScraperSchedule='cron(0 2 * * ? *)'"
+region = "eu-west-1"
+
+[prod.deploy.parameters.tags]
+Project = "malta-property-analyzer"
+Environment = "prod"
+ManagedBy = "SAM"
+CostCenter = "property-analytics"

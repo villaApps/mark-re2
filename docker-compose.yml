@@ -1,0 +1,277 @@
+version: '3.8'
+
+services:
+  # =============================================================================
+  # DynamoDB Local
+  # =============================================================================
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: malta-dynamodb-local
+    ports:
+      - "8000:8000"
+    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath /data"
+    volumes:
+      - dynamodb-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/shell/ || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # LocalStack (AWS Services)
+  # =============================================================================
+  localstack:
+    image: localstack/localstack:latest
+    container_name: malta-localstack
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    environment:
+      - DEBUG=1
+      - LAMBDA_EXECUTOR=docker
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - SERVICES=s3,sqs,sns,lambda,apigateway,cloudformation,ssm,secretsmanager
+      - DEFAULT_REGION=eu-central-1
+      - AWS_ACCESS_KEY_ID=testing
+      - AWS_SECRET_ACCESS_KEY=testing
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # Frontend Development Server
+  # =============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: malta-frontend-dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+      - NEXT_PUBLIC_STAGE=local
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    command: npm run dev
+    depends_on:
+      - backend
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # Backend SAM Local
+  # =============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: malta-backend-dev
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+      - /app/.aws-sam
+    environment:
+      - AWS_ACCESS_KEY_ID=testing
+      - AWS_SECRET_ACCESS_KEY=testing
+      - AWS_DEFAULT_REGION=eu-central-1
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      - STAGE=local
+      - PYTHONPATH=/app/src
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+    command: sam local start-api --host 0.0.0.0 --port 3000 --env-vars env.json
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # Redis Cache (Optional)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: malta-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # PostgreSQL (Optional - for future use)
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: malta-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=malta
+      - POSTGRES_PASSWORD=malta_password
+      - POSTGRES_DB=malta_property_analyzer
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U malta"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # MinIO (S3 Compatible Storage)
+  # =============================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: malta-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # MailHog (Email Testing)
+  # =============================================================================
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: malta-mailhog
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # Prometheus (Monitoring)
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: malta-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # Grafana (Dashboards)
+  # =============================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: malta-grafana
+    ports:
+      - "3002:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # Jaeger (Distributed Tracing)
+  # =============================================================================
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: malta-jaeger
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - malta-network
+
+  # =============================================================================
+  # Seed Data (One-time job)
+  # =============================================================================
+  seed-data:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./backend:/app
+    environment:
+      - AWS_ACCESS_KEY_ID=testing
+      - AWS_SECRET_ACCESS_KEY=testing
+      - AWS_DEFAULT_REGION=eu-central-1
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      - STAGE=local
+      - PYTHONPATH=/app/src
+    command: python -m scripts.seed_data
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+    profiles:
+      - seed
+    networks:
+      - malta-network
+
+volumes:
+  dynamodb-data:
+  localstack-data:
+  redis-data:
+  postgres-data:
+  minio-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  malta-network:
+    driver: bridge

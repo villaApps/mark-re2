@@ -1,0 +1,565 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Malta Property Investment Analyzer - Serverless Backend
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.13
+    Architectures:
+      - x86_64
+    Layers:
+      - !Ref SharedCodeLayer
+    Environment:
+      Variables:
+        POWERTOOLS_SERVICE_NAME: malta-property-analyzer
+        POWERTOOLS_LOG_FORMAT: JSON
+        POWERTOOLS_LOGGER_LOG_EVENT: true
+        LOG_LEVEL: INFO
+        PROPERTIES_TABLE: !Ref PropertiesTable
+        ANALYSIS_TABLE: !Ref AnalysisTable
+        SCRAPER_RUNS_TABLE: !Ref ScraperRunsTable
+        EVENT_BUS_NAME: !Ref PropertyEventBus
+        DLQ_URL: !Ref ScraperDLQ
+        RAW_DATA_BUCKET: !Ref RawDataBucket
+        PYTHONPATH: /opt/python:/var/task
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+  ScraperSchedule:
+    Type: String
+    Default: 'cron(0 2 * * ? *)'
+    Description: 'EventBridge schedule for scraper (default: daily at 2 AM UTC)'
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, prod]
+
+Resources:
+  # ============================================
+  # API Gateway
+  # ============================================
+  PropertiesApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'malta-property-api-${Environment}'
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+        MaxAge: "'600'"
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiGatewayAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","responseLength":"$context.responseLength","integrationLatency":"$context.integrationLatency","responseLatency":"$context.responseLatency"}'
+      MethodSettings:
+        - ResourcePath: /*
+          HttpMethod: '*'
+          LoggingLevel: INFO
+          DataTraceEnabled: true
+          MetricsEnabled: true
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
+
+  ApiGatewayAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/malta-property-api-${Environment}'
+      RetentionInDays: !If [IsProduction, 30, 7]
+
+  # ============================================
+  # EventBridge Event Bus
+  # ============================================
+  PropertyEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub 'property-events-${Environment}'
+
+  # ============================================
+  # SQS Dead Letter Queue
+  # ============================================
+  ScraperDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'scraper-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600  # 14 days
+      VisibilityTimeout: 300
+      KmsMasterKeyId: alias/aws/sqs
+
+  ScraperDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'ScraperDLQ-MessageCount-${Environment}'
+      AlarmDescription: 'Alarm when messages are in DLQ'
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ScraperDLQ.QueueName
+
+  # ============================================
+  # S3 Bucket for Raw Data
+  # ============================================
+  RawDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'malta-property-raw-data-${Environment}-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldRawData
+            Status: Enabled
+            ExpirationInDays: !If [IsProduction, 90, 30]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ============================================
+  # DynamoDB Tables
+  # ============================================
+  PropertiesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'properties-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: propertyId
+          AttributeType: S
+        - AttributeName: location
+          AttributeType: S
+        - AttributeName: priceRange
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+        - AttributeName: propertyType
+          AttributeType: S
+      KeySchema:
+        - AttributeName: propertyId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: LocationIndex
+          KeySchema:
+            - AttributeName: location
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: PriceRangeIndex
+          KeySchema:
+            - AttributeName: priceRange
+              KeyType: HASH
+            - AttributeName: price
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: PropertyTypeIndex
+          KeySchema:
+            - AttributeName: propertyType
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProduction, true, false]
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  AnalysisTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'analysis-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: analysisId
+          AttributeType: S
+        - AttributeName: propertyId
+          AttributeType: S
+        - AttributeName: roiScore
+          AttributeType: N
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: analysisId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: PropertyIndex
+          KeySchema:
+            - AttributeName: propertyId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: ROIScoreIndex
+          KeySchema:
+            - AttributeName: roiScore
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProduction, true, false]
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ScraperRunsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'scraper-runs-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: runId
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: startedAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: runId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: StatusIndex
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: startedAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ============================================
+  # Secrets Manager
+  # ============================================
+  ScraperApiKeys:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'malta-property-scraper/api-keys-${Environment}'
+      Description: 'API keys for property scraper services'
+      SecretString: '{"scrapingbee_key":"placeholder","proxy_key":"placeholder"}'
+      KmsKeyId: alias/aws/secretsmanager
+
+  # ============================================
+  # Lambda Layer for Shared Code
+  # ============================================
+  SharedCodeLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub 'malta-property-shared-${Environment}'
+      Description: 'Shared scraper and analytics modules'
+      ContentUri: ./layer/
+      CompatibleRuntimes:
+        - python3.13
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.13
+
+  # ============================================
+  # Lambda Functions
+  # ============================================
+
+  # Scraper Function - Triggered by EventBridge Schedule
+  ScraperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'malta-property-scraper-${Environment}'
+      Handler: src.handlers.scraper.handler
+      CodeUri: .
+      Description: 'Scrapes property listings from Malta real estate websites'
+      Environment:
+        Variables:
+          SCRAPER_API_KEYS_SECRET: !Ref ScraperApiKeys
+      Events:
+        ScheduledEvent:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref ScraperSchedule
+            Name: !Sub 'scraper-schedule-${Environment}'
+            Description: 'Daily scraper trigger'
+            Enabled: true
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt ScraperDLQ.Arn
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PropertiesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ScraperRunsTable
+        - S3CrudPolicy:
+            BucketName: !Ref RawDataBucket
+        - SecretsManagerReadWrite:
+            SecretId: !Ref ScraperApiKeys
+        - EventBridgePutEventsPolicy:
+            EventBusName: !Ref PropertyEventBus
+      Tracing: Active
+      LoggingConfig:
+        LogGroup: !Ref ScraperFunctionLogGroup
+        LogFormat: JSON
+
+  ScraperFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/malta-property-scraper-${Environment}'
+      RetentionInDays: !If [IsProduction, 30, 7]
+
+  # Analyze Function - Triggered by EventBridge after scraper completes
+  AnalyzeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'malta-property-analyzer-${Environment}'
+      Handler: src.handlers.analyzer.handler
+      CodeUri: .
+      Description: 'Analyzes properties for ROI potential'
+      Events:
+        ScraperCompleteEvent:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref PropertyEventBus
+            RuleName: !Sub 'scraper-complete-rule-${Environment}'
+            Pattern:
+              source:
+                - malta.property.scraper
+              detail-type:
+                - ScraperComplete
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PropertiesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AnalysisTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ScraperRunsTable
+      Tracing: Active
+      LoggingConfig:
+        LogGroup: !Ref AnalyzeFunctionLogGroup
+        LogFormat: JSON
+
+  AnalyzeFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/malta-property-analyzer-${Environment}'
+      RetentionInDays: !If [IsProduction, 30, 7]
+
+  # Properties API Function
+  PropertiesApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'malta-property-api-${Environment}'
+      Handler: src.handlers.properties_api.handler
+      CodeUri: .
+      Description: 'HTTP API for property CRUD operations'
+      Events:
+        ListProperties:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PropertiesApi
+            Path: /properties
+            Method: GET
+        GetProperty:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PropertiesApi
+            Path: /properties/{id}
+            Method: GET
+        TriggerAnalysis:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PropertiesApi
+            Path: /properties/{id}/analyze
+            Method: POST
+        GetOpportunities:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PropertiesApi
+            Path: /opportunities
+            Method: GET
+        GetStats:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PropertiesApi
+            Path: /stats
+            Method: GET
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref PropertiesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AnalysisTable
+        - EventBridgePutEventsPolicy:
+            EventBusName: !Ref PropertyEventBus
+      Tracing: Active
+      LoggingConfig:
+        LogGroup: !Ref PropertiesApiFunctionLogGroup
+        LogFormat: JSON
+
+  PropertiesApiFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/malta-property-api-${Environment}'
+      RetentionInDays: !If [IsProduction, 30, 7]
+
+  # ROI API Function
+  RoiApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'malta-property-roi-api-${Environment}'
+      Handler: src.handlers.roi_api.handler
+      CodeUri: .
+      Description: 'HTTP API for ROI calculations'
+      Events:
+        GetROI:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PropertiesApi
+            Path: /properties/{id}/roi
+            Method: GET
+        CalculateROI:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PropertiesApi
+            Path: /roi/calculate
+            Method: POST
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref PropertiesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AnalysisTable
+      Tracing: Active
+      LoggingConfig:
+        LogGroup: !Ref RoiApiFunctionLogGroup
+        LogFormat: JSON
+
+  RoiApiFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/malta-property-roi-api-${Environment}'
+      RetentionInDays: !If [IsProduction, 30, 7]
+
+  # DynamoDB Stream Processor - For property updates
+  StreamProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'malta-property-stream-processor-${Environment}'
+      Handler: src.handlers.stream_processor.handler
+      CodeUri: .
+      Description: 'Processes DynamoDB stream events'
+      Events:
+        DynamoDBStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt PropertiesTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 100
+            MaximumBatchingWindowInSeconds: 5
+            FilterCriteria:
+              Filters:
+                - Pattern: '{"eventName": ["INSERT", "MODIFY"]}'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AnalysisTable
+        - EventBridgePutEventsPolicy:
+            EventBusName: !Ref PropertyEventBus
+      Tracing: Active
+      LoggingConfig:
+        LogGroup: !Ref StreamProcessorFunctionLogGroup
+        LogFormat: JSON
+
+  StreamProcessorFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/malta-property-stream-processor-${Environment}'
+      RetentionInDays: !If [IsProduction, 30, 7]
+
+  # ============================================
+  # CloudWatch Alarms
+  # ============================================
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'Lambda-Errors-${Environment}'
+      AlarmDescription: 'Alarm when Lambda functions have errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'Lambda-Throttles-${Environment}'
+      AlarmDescription: 'Alarm when Lambda functions are throttled'
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  ApiUrl:
+    Description: 'API Gateway endpoint URL'
+    Value: !Sub 'https://${PropertiesApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub 'MaltaPropertyApiUrl-${Environment}'
+
+  PropertiesTableArn:
+    Description: 'Properties DynamoDB Table ARN'
+    Value: !GetAtt PropertiesTable.Arn
+    Export:
+      Name: !Sub 'PropertiesTableArn-${Environment}'
+
+  AnalysisTableArn:
+    Description: 'Analysis DynamoDB Table ARN'
+    Value: !GetAtt AnalysisTable.Arn
+    Export:
+      Name: !Sub 'AnalysisTableArn-${Environment}'
+
+  EventBusArn:
+    Description: 'EventBridge Event Bus ARN'
+    Value: !GetAtt PropertyEventBus.Arn
+    Export:
+      Name: !Sub 'PropertyEventBusArn-${Environment}'
+
+  RawDataBucketName:
+    Description: 'S3 Bucket for raw data'
+    Value: !Ref RawDataBucket
+    Export:
+      Name: !Sub 'RawDataBucketName-${Environment}'
