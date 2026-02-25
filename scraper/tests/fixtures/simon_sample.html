@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Properties - Simon Estates</title>
+</head>
+<body>
+    <header>
+        <nav>
+            <a href="/" class="logo">Simon Estates</a>
+            <ul>
+                <li><a href="/properties/">Properties</a></li>
+                <li><a href="/about/">About</a></li>
+                <li><a href="/contact/">Contact</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <h1>Property Listings</h1>
+        
+        <div class="property-listings">
+            <!-- Property Card 1 -->
+            <article class="property-card" data-property-id="SE-12345">
+                <div class="property-image">
+                    <img src="https://www.simonestates.com/media/property-1-main.jpg" 
+                         alt="Luxury Apartment in Sliema" 
+                         class="main-image">
+                    <div class="image-gallery">
+                        <img src="https://www.simonestates.com/media/property-1-thumb-1.jpg" alt="">
+                        <img src="https://www.simonestates.com/media/property-1-thumb-2.jpg" alt="">
+                    </div>
+                </div>
+                <div class="property-details">
+                    <h2 class="property-title">Luxury Seafront Apartment in Sliema</h2>
+                    <p class="property-location">
+                        <span class="location-icon">📍</span>
+                        Tower Road, Sliema, Malta
+                    </p>
+                    <p class="property-type">Apartment</p>
+                    <div class="property-features">
+                        <span class="feature beds">
+                            <span class="feature-icon">🛏️</span>
+                            <span class="feature-value">3</span>
+                            <span class="feature-label">Bedrooms</span>
+                        </span>
+                        <span class="feature baths">
+                            <span class="feature-icon">🚿</span>
+                            <span class="feature-value">2</span>
+                            <span class="feature-label">Bathrooms</span>
+                        </span>
+                        <span class="feature sqm">
+                            <span class="feature-icon">📐</span>
+                            <span class="feature-value">150</span>
+                            <span class="feature-label">m²</span>
+                        </span>
+                    </div>
+                    <p class="property-price">€850,000</p>
+                    <a href="/properties/luxury-seafront-apartment-sliema/" class="view-details">View Details</a>
+                </div>
+            </article>
+
+            <!-- Property Card 2 -->
+            <article class="property-card" data-property-id="SE-12346">
+                <div class="property-image">
+                    <img src="https://www.simonestates.com/media/property-2-main.jpg" 
+                         alt="Modern Villa in Madliena" 
+                         class="main-image">
+                </div>
+                <div class="property-details">
+                    <h2 class="property-title">Modern Villa with Pool in Madliena</h2>
+                    <p class="property-location">
+                        <span class="location-icon">📍</span>
+                        Madliena Heights, Malta
+                    </p>
+                    <p class="property-type">Villa</p>
+                    <div class="property-features">
+                        <span class="feature beds">
+                            <span class="feature-icon">🛏️</span>
+                            <span class="feature-value">4</span>
+                            <span class="feature-label">Bedrooms</span>
+                        </span>
+                        <span class="feature baths">
+                            <span class="feature-icon">🚿</span>
+                            <span class="feature-value">3</span>
+                            <span class="feature-label">Bathrooms</span>
+                        </span>
+                        <span class="feature sqm">
+                            <span class="feature-icon">📐</span>
+                            <span class="feature-value">350</span>
+                            <span class="feature-label">m²</span>
+                        </span>
+                    </div>
+                    <p class="property-price">€1,250,000</p>
+                    <a href="/properties/modern-villa-madliena/" class="view-details">View Details</a>
+                </div>
+            </article>
+
+            <!-- Property Card 3 - Minimal data -->
+            <article class="property-card" data-property-id="SE-12347">
+                <div class="property-image">
+                    <img src="https://www.simonestates.com/media/property-3-main.jpg" 
+                         alt="Studio in Valletta" 
+                         class="main-image">
+                </div>
+                <div class="property-details">
+                    <h2 class="property-title">Cozy Studio in Historic Valletta</h2>
+                    <p class="property-location">
+                        <span class="location-icon">📍</span>
+                        Republic Street, Valletta, Malta
+                    </p>
+                    <p class="property-type">Studio</p>
+                    <div class="property-features">
+                        <span class="feature beds">
+                            <span class="feature-icon">🛏️</span>
+                            <span class="feature-value">0</span>
+                            <span class="feature-label">Bedrooms</span>
+                        </span>
+                        <span class="feature baths">
+                            <span class="feature-icon">🚿</span>
+                            <span class="feature-value">1</span>
+                            <span class="feature-label">Bathroom</span>
+                        </span>
+                    </div>
+                    <p class="property-price">€185,000</p>
+                    <a href="/properties/studio-valletta/" class="view-details">View Details</a>
+                </div>
+            </article>
+        </div>
+
+        <!-- Pagination -->
+        <nav class="pagination">
+            <a href="/properties/?page=1" class="page-link active">1</a>
+            <a href="/properties/?page=2" class="page-link">2</a>
+            <a href="/properties/?page=3" class="page-link">3</a>
+            <a href="/properties/?page=2" class="next-page">Next →</a>
+        </nav>
+    </main>
+
+    <footer>
+        <p>&copy; 2024 Simon Estates. All rights reserved.</p>
+    </footer>
+</body>
+</html>
